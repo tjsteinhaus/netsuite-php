@@ -14,7 +14,7 @@
  * @license    https://raw.githubusercontent.com/ryanwinchester/netsuite-php/master/original/NetSuite%20Application%20Developer%20License%20Agreement.txt
  * @link       http://www.netsuite.com/portal/developers/resources/suitetalk-sample-applications.shtml
  *
- * generated:  2017-03-31 08:48:20 PM UTC
+ * generated:  2017-08-22 02:41:36 PM CDT
  */
 
 namespace NetSuite\Classes;
@@ -39,6 +39,7 @@ class Deposit extends Record {
     public $paymentList;
     public $otherList;
     public $cashBackList;
+    public $accountingBookDetailList;
     public $customFieldList;
     public $internalId;
     public $externalId;
@@ -62,6 +63,7 @@ class Deposit extends Record {
         "paymentList" => "DepositPaymentList",
         "otherList" => "DepositOtherList",
         "cashBackList" => "DepositCashBackList",
+        "accountingBookDetailList" => "AccountingBookDetailList",
         "customFieldList" => "CustomFieldList",
         "internalId" => "string",
         "externalId" => "string",

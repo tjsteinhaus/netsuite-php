@@ -24,324 +24,229 @@ use SoapHeader;
 
 class NetSuiteClient
 {
-    /**
-     * @var array
-     */
-    private $config;
-    /**
-     * @var SoapClient
-     */
-    private $client;
-    /**
-     * @var array
-     */
+	private $nsversion = null;
+
+    public $client = null;
+    public $passport = null;
+    public $applicationInfo = null;
+    public $tokenPassport = null;
     private $soapHeaders = array();
+    private $userequest = true;
+    private $usetba = false;
+    protected $classmap = null;
+    public $generated_from_endpoint = "";
+    protected $tokenGenerator = null;
 
-    /**
-     * @param array $config
-     * @param array $options
-     * @param SoapClient $client
-     */
-    public function __construct($config, $options = array(), $client = null)
-    {
-        $this->config = $config;
-        $options = $this->createOptions($this->config, $options);
-        $wsdl = $this->createWsdl($this->config);
-        $this->client = $client ?: new SoapClient($wsdl, $options);
-    }
 
-    public static function createFromEnv($options = array(), $client = null)
-    {
-        $config = array(
-            'endpoint' => getenv('NETSUITE_ENDPOINT') ?: '2016_2',
-            'host' => getenv('NETSUITE_HOST') ?: 'https://webservices.sandbox.netsuite.com',
-            'email' => getenv('NETSUITE_EMAIL'),
-            'password' => getenv('NETSUITE_PASSWORD'),
-            'role' => getenv('NETSUITE_ROLE') ?: '3',
-            'account' => getenv('NETSUITE_ACCOUNT'),
-            'app_id' => getenv('NETSUITE_APP_ID') ?: '4AD027CA-88B3-46EC-9D3E-41C6E6A325E2',
-            'logging' => getenv('NETSUITE_LOGGING'),
-            'log_path' => getenv('NETSUITE_LOG_PATH'),
-        );
+    protected function __construct($wsdl=null, $options=array()) {
 
-        return new static($config, $options, $client);
-    }
-
-    /**
-     * Make the SOAP call!
-     *
-     * @param string $operation
-     * @param mixed $parameter
-     * @return mixed
-     */
-    protected function makeSoapCall($operation, $parameter)
-    {
-        $this->fixWtfCookieBug();
-
-        if (isset($this->config['token'])) {
-            $this->addHeader('tokenPassport', $this->createTokenPassportFromConfig($this->config));
-        } else {
-            $this->setApplicationInfo($this->config['app_id']);
-            $this->addHeader("passport", $this->createPassportFromConfig($this->config));
+        if (!isset($wsdl)) {
+             if (!defined('NS_HOST')) {
+                throw new Exception('Webservice host must be specified');
+             }
+             if (!defined('NS_ENDPOINT')) {
+                throw new Exception('Webservice endpoint must be specified');
+             }
+             $wsdl = NS_HOST . "/wsdl/v" . NS_ENDPOINT . "_0/netsuite.wsdl";
+             $nsversion = NS_ENDPOINT;
         }
 
+        if (!extension_loaded('soap')) {
+            // check for loaded SOAP extension
+            $soap_warning = 'The SOAP PHP extension is not loaded. Please modify the extension settings in php.ini accordingly.';
+            trigger_error($soap_warning, E_USER_WARNING);
+        }
 
-        try {
-            $response = $this->client->__soapCall($operation, array($parameter), null, $this->soapHeaders);
-            $this->logSoapCall($operation);
-            return $response;
-        } catch (\Exception $e) {
-            $this->logSoapCall($operation);
-            throw $e;
+        if (!extension_loaded('openssl') && substr($wsdl, 0, 5) == "https") {
+            // check for loaded SOAP extension
+            $soap_warning = 'The Open SSL PHP extension is not loaded and you are trying to use HTTPS protocol. Please modify the extension settings in php.ini accordingly.';
+            trigger_error($soap_warning, E_USER_WARNING);
+        }
+
+        if ( $this->generated_from_endpoint != NS_ENDPOINT ) {
+            // check for the endpoint compatibility failed, but it might still be compatible. Issue only warning
+            $endpoint_warning = 'The NetSuiteService classes were generated from the '.$this->generated_from_endpoint .' endpoint but you are running against ' . NS_ENDPOINT;
+            trigger_error($endpoint_warning, E_USER_WARNING);
+        }
+
+        $options['classmap'] = $this->classmap;
+        $options['trace'] = 1;
+        $options['connection_timeout'] = 5;
+        $options['cache_wsdl'] = WSDL_CACHE_BOTH;
+        $httpheaders = "PHP-SOAP/" . phpversion() . " + NetSuite PHP Toolkit " . $this->nsversion;
+
+        if (defined('NS_HOST') && defined('NS_ENDPOINT')) {
+            $options['location'] = NS_HOST . "/services/NetSuitePort_" . NS_ENDPOINT;
+        }
+        $options['keep_alive'] = false; // do not maintain http connection to the server.
+        $options['features'] = SOAP_SINGLE_ELEMENT_ARRAYS;
+
+        $context = array('http' =>
+            array(
+                'header' => 'Authorization: dnwdjewdnwe'
+            )
+        );
+        //$options['stream_context'] = stream_context_create($context);
+
+        $options['user_agent'] =  $httpheaders;
+        if (defined('NS_ACCOUNT') && defined('NS_EMAIL') && defined('NS_PASSWORD')) {
+            $this->setPassport(NS_ACCOUNT, NS_EMAIL, defined('NS_ROLE')?NS_ROLE:null, NS_PASSWORD);
+        }
+        if (defined('NS_APPID')) {
+            $this->setApplicationInfo(NS_APPID);
+        }
+        $this->client = new SoapClient($wsdl, $options);
+    }
+
+    public function setPassport($nsaccount, $nsemail, $nsrole, $nspassword) {
+        $this->passport = new Passport();
+        $this->passport->account = $nsaccount;
+        $this->passport->email = $nsemail;
+        $this->passport->password = $nspassword;
+        if (isset($nsrole)) {
+            $this->passport->role = new RecordRef();
+            $this->passport->role->internalId = $nsrole;
         }
     }
 
-    /**
-     * Create the options array.
-     *
-     * @param array $config
-     * @param array $overrides
-     * @return array
-     */
-    private function createOptions($config, $overrides = array())
-    {
-        return array_merge(array(
-            'classmap' => require __DIR__."/includes/classmap.php",
-            'trace' => 1,
-            'connection_timeout' => 5,
-            'cache_wsdl' => WSDL_CACHE_BOTH,
-            'location' => $config['host']."/services/NetSuitePort_".$config['endpoint'],
-            'keep_alive' => false,
-            'features' => SOAP_SINGLE_ELEMENT_ARRAYS,
-            'user_agent' => "PHP-SOAP/".phpversion()." + ryanwinchester/netsuite-php",
-        ), $overrides);
+
+    public function setApplicationInfo($nsappid) {
+        $this->applicationInfo = new ApplicationInfo();
+        $this->applicationInfo->applicationId = $nsappid;
+        $this->addHeader("applicationInfo", $this->applicationInfo);
     }
 
-    /**
-     * Build the WSDL address from the config.
-     *
-     * @param array $config
-     * @return string
-     */
-    private function createWsdl($config)
-    {
-        return $config['host'].'/wsdl/v'.$config['endpoint'].'_0/netsuite.wsdl';
+    protected function setTokenPassport($tokenPassport) {
+        $this->tokenPassport = $tokenPassport;
     }
 
-    /**
-     * Create the Passport.
-     *
-     * @param array $config
-     * @return Passport
-     */
-    private function createPassportFromConfig($config)
-    {
-        $passport = new Passport();
-        $passport->account = $config['account'];
-        $passport->email = $config['email'];
-        $passport->password = $config['password'];
-        $passport->role = new RecordRef();
-        $passport->role->internalId = $config['role'];
-
-        return $passport;
+    public function useRequestLevelCredentials($option) {
+         $this->userequest = $option;
     }
 
-    /**
-     * Create the TokenPassport.
-     *
-     * @param array $config
-     * @return TokenPassport
-     */
-    private function createTokenPassportFromConfig($config)
+    public function setPreferences ($warningAsError = false, $disableMandatoryCustomFieldValidation = false, $disableSystemNotesForCustomFields = false,  $ignoreReadOnlyFields = false, $runServerSuiteScriptAndTriggerWorkflows = null)
     {
-        $tokenPassport = new TokenPassport();
-        $tokenPassport->account = $config['account'];
-        $tokenPassport->consumerKey = $config['consumerKey'];
-        $tokenPassport->token = $config['token'];
-        $tokenPassport->nonce = $this->generateTokenPassportNonce();
-        $tokenPassport->timestamp = time();
+        $sp = new Preferences();
+        $sp->warningAsError = $warningAsError;
+        $sp->disableMandatoryCustomFieldValidation = $disableMandatoryCustomFieldValidation;
+        $sp->disableSystemNotesForCustomFields = $disableSystemNotesForCustomFields;
+        $sp->ignoreReadOnlyFields = $ignoreReadOnlyFields;
+        $sp->runServerSuiteScriptAndTriggerWorkflows = $runServerSuiteScriptAndTriggerWorkflows;
 
-        $signatureAlgorithm = isset($config['signatureAlgorithm']) ? $config['signatureAlgorithm'] : 'sha256';
-
-        $tokenSignature = new TokenPassportSignature();
-        $tokenSignature->_ = $this->computeTokenPassportSignature(
-            $config['account'],
-            $config['consumerKey'],
-            $config['consumerSecret'],
-            $config['token'],
-            $config['tokenSecret'],
-            $tokenPassport->nonce,
-            $tokenPassport->timestamp,
-            $signatureAlgorithm
-        );
-        $tokenSignature->algorithm = 'HMAC_' . strtoupper($signatureAlgorithm);
-        $tokenPassport->signature = $tokenSignature;
-
-        return $tokenPassport;
+        $this->addHeader("preferences", $sp);
     }
 
-    /**
-     * Add a header by name.
-     *
-     * @param string $header
-     * @param mixed $value
-     */
-    public function addHeader($header, $value)
-    {
-        $this->soapHeaders[$header] = new SoapHeader("ns", $header, $value);
-    }
-
-    /**
-     * Remove a header by name.
-     *
-     * @param string $header
-     */
-    public function clearHeader($header)
-    {
-        unset($this->soapHeaders[$header]);
-    }
-
-    /**
-     * Set the application id.
-     *
-     * @param string $appId
-     */
-    public function setApplicationInfo($appId = null)
-    {
-        $applicationInfo = new ApplicationInfo();
-        $applicationInfo->applicationId = $appId;
-        $this->addHeader("applicationInfo", $applicationInfo);
-    }
-
-    /**
-     * Set preferences header.
-     *
-     * @param bool $warningAsError
-     * @param bool $disableMandatoryCustomFieldValidation
-     * @param bool $disableSystemNotesForCustomFields
-     * @param bool $ignoreReadOnlyFields
-     */
-    public function setPreferences(
-        $warningAsError = false,
-        $disableMandatoryCustomFieldValidation = false,
-        $disableSystemNotesForCustomFields = false,
-        $ignoreReadOnlyFields = false
-    ) {
-        $preferences = new Preferences();
-        $preferences->warningAsError = $warningAsError;
-        $preferences->disableMandatoryCustomFieldValidation = $disableMandatoryCustomFieldValidation;
-        $preferences->disableSystemNotesForCustomFields = $disableSystemNotesForCustomFields;
-        $preferences->ignoreReadOnlyFields = $ignoreReadOnlyFields;
-        $this->addHeader("preferences", $preferences);
-    }
-
-    /**
-     * Clear preferences header.
-     */
-    public function clearPreferences()
-    {
+    public function clearPreferences() {
         $this->clearHeader("preferences");
     }
 
-    /**
-     * Set the search preferences header.
-     *
-     * @param bool $bodyFieldsOnly
-     * @param int $pageSize
-     * @param bool $returnSearchColumns
-     */
-    public function setSearchPreferences($bodyFieldsOnly = true, $pageSize = 50, $returnSearchColumns = true)
+    public function setSearchPreferences ($bodyFieldsOnly = true, $pageSize = 50, $returnSearchColumns = true)
     {
-        $preferences = new SearchPreferences();
-        $preferences->bodyFieldsOnly = $bodyFieldsOnly;
-        $preferences->pageSize = $pageSize;
-        $preferences->returnSearchColumns = $returnSearchColumns;
+        $sp = new SearchPreferences();
+        $sp->bodyFieldsOnly = $bodyFieldsOnly;
+        $sp->pageSize = $pageSize;
+        $sp->returnSearchColumns = $returnSearchColumns;
 
-        $this->addHeader("searchPreferences", $preferences);
+        $this->addHeader("searchPreferences", $sp);
     }
 
-    /**
-     * Clear the search preferences.
-     */
-    public function clearSearchPreferences()
-    {
+    public function clearSearchPreferences() {
         $this->clearHeader("searchPreferences");
     }
 
-    /**
-     * SoapClient apparently always sends the JSESSIONID cookie.
-     * So we'll just un-set it to prevent this.
-     */
-    private function fixWtfCookieBug()
-    {
-        $this->client->__setCookie("JSESSIONID");
+    public function addHeader($header_name, $header) {
+        $this->soapHeaders[$header_name] = new SoapHeader("ns", $header_name, $header);
+    }
+    public function clearHeader($header_name) {
+        unset($this->soapHeaders[$header_name]);
     }
 
-    /**
-     * Turn request logging on or off.
-     *
-     * @param bool $on
-     */
-    public function logRequests($on = true)
-    {
-        $this->config['logging'] = $on;
+    protected function makeSoapCall($operation, $parameter) {
+        if ($this->userequest) {
+            // use request level credentials, add passport as a SOAP header
+            $this->clearHeader("tokenPassport");
+            $this->addHeader("passport", $this->passport);
+            $this->addHeader("applicationInfo", $this->applicationInfo);
+            // SoapClient, even with keep-alive set to false, keeps sending the JSESSIONID cookie back to the server on subsequent requests. Unsetting the cookie to prevent this.
+            $this->client->__setCookie("JSESSIONID");
+        } else if ($this->usetba) {
+            if (isset($this->tokenGenerator)) {
+                $token = $this->tokenGenerator->generateTokenPassport();
+                $this->setTokenPassport($token);
+            }
+            $this->addHeader("tokenPassport", $this->tokenPassport);
+            $this->clearHeader("passport");
+            $this->clearHeader("applicationInfo");
+        } else {
+            $this->clearHeader("passport");
+            $this->clearHeader("tokenPassport");
+            $this->addHeader("applicationInfo", $this->applicationInfo);
+        }
+
+        $response = $this->client->__soapCall($operation, array($parameter), NULL, $this->soapHeaders);
+
+        if ( file_exists(dirname(__FILE__) . '/nslog') ) {
+            // log the request and response into the nslog directory. Code taken from PHP toolkit
+            // REQUEST
+            $req = dirname(__FILE__) . '/nslog' . "/" . date("Ymd.His") . "." . milliseconds() . "-" . $operation . "-request.xml";
+            $Handle = fopen($req, 'w');
+            $Data = $this->client->__getLastRequest();
+
+            $Data = cleanUpNamespaces($Data);
+
+            $xml = simplexml_load_string($Data, 'SimpleXMLElement', LIBXML_NOCDATA);
+
+            $passwordFields = $xml->xpath("//password | //password2 | //currentPassword | //newPassword | //newPassword2 | //ccNumber | //ccSecurityCode | //socialSecurityNumber");
+
+            foreach ($passwordFields as &$pwdField) {
+                (string)$pwdField[0] = "[Content Removed for Security Reasons]";
+            }
+
+            $stringCustomFields = $xml->xpath("//customField[@xsitype='StringCustomFieldRef']");
+
+            foreach ($stringCustomFields as $field) {
+                (string)$field->value = "[Content Removed for Security Reasons]";
+            }
+
+            $xml_string = str_replace('xsitype', 'xsi:type', $xml->asXML());
+
+            fwrite($Handle, $xml_string);
+            fclose($Handle);
+
+            // RESPONSE
+            $resp = dirname(__FILE__) . '/nslog' . "/" . date("Ymd.His") . "." . milliseconds() . "-" . $operation . "-response.xml";
+            $Handle = fopen($resp, 'w');
+            $Data = $this->client->__getLastResponse();
+            fwrite($Handle, $Data);
+            fclose($Handle);
+
+        }
+
+        return $response;
+
     }
 
-    /**
-     * Set the logging path.
-     *
-     * @param string $logPath
-     */
-    public function setLogPath($logPath)
-    {
-        $this->config['log_path'] = $logPath;
+    public function setHost($hostName) {
+        return $this->client->__setLocation($hostName . "/services/NetSuitePort_" . NS_ENDPOINT);
     }
 
-    /**
-     * Log the last SOAP call.
-     *
-     * @param string $operation
-     */
-    private function logSoapCall($operation)
-    {
-        if (isset($this->config['logging']) && $this->config['logging']) {
-            $logger = new Logger(
-                isset($this->config['log_path']) ? $this->config['log_path'] : null
-            );
-            $logger->logSoapCall($this->client, $operation);
+    public function setTokenGenerator(iTokenPassportGenerator $generator = null) {
+        $this->tokenGenerator = $generator;
+        if ($generator != null) {
+          $this->usetba = true;
+          $this->userequest = false;
+        } else {
+          $this->usetba = false;
         }
     }
+}
 
+/**
+ * iTokenPassportGenerator
+ */
+interface iTokenPassportGenerator {
     /**
-     * Compute TokenPassport signature
-     *
-     * @param int|string $account
-     * @param string $consumerKey
-     * @param string $consumerKey
-     * @param string $token
-     * @param string $tokenSecret
-     * @param string $nonce
-     * @param int|string $timestamp
-     * @param string $signatureAlgorithm
-     * @return string
+     * returns one time Token Passport
      */
-    private function computeTokenPassportSignature($account, $consumerKey, $consumerSecret, $token, $tokenSecret, $nonce, $timestamp, $signatureAlgorithm)
-    {
-        $baseString = implode('&', array($account, $consumerKey, $token, $nonce, $timestamp));
-        $key = $consumerSecret . '&' . $tokenSecret;
-        return base64_encode(hash_hmac($signatureAlgorithm, $baseString, $key, true));
-    }
-
-    /**
-     * Generate random (or sufficiently enough so) string of characters
-     */
-    private function generateTokenPassportNonce($length = 32)
-    {
-        $noncePool = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
-        $key = '';
-        for ($i = 0; $i < $length; $i++) {
-            $key .= $noncePool[mt_rand(0, 61)];
-        }
-        return $key;
-    }
+    public function generateTokenPassport();
 }
