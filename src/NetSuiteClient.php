@@ -183,6 +183,10 @@ class NetSuiteClient
             $this->addHeader("applicationInfo", $this->applicationInfo);
         }
 
+	   if( $operation == 'mapSso' ) {
+		   $this->clearHeader("passport");
+	   }
+
         $response = $this->client->__soapCall($operation, array($parameter), NULL, $this->soapHeaders);
 
         if ( file_exists(dirname(__FILE__) . '/nslog') ) {
